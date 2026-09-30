@@ -1,6 +1,6 @@
 # CPR BPS
 
-独立的 Basis Points 插件，当前版本 **0.11.1**。使用官方 CPR 插件接口，不修改 CPR 程序或原生前端
+独立的 Basis Points 插件，当前版本 **0.11.2**。使用官方 CPR 插件接口，不修改 CPR 程序或原生前端
 
 ## 使用
 
@@ -57,6 +57,14 @@ BPS 路由记录最多保留 30 天，列表与详情查询也限制在最近 30
 Responses JSON/SSE、客户端 WebSocket、function/custom/namespace/tool_search 中继、工具结果回传、代码参数、JSON 修复、图片、思考等级映射、结构化结果校验、请求内压缩、历史续接和本地预热
 
 CPR 负责账号池、OAuth、代理、租约、重试和账本。Rust 插件使用公开 SDK；Go 转换器不接收 OAuth 凭据，外部模型/附件请求由宿主受管 HTTP 发出
+
+## 0.11.2 工具中继修复
+
+- 普通 function/custom/tool_search 与 raw cmd/code 的规则明确分离；raw metadata 必须是 JSON 对象字符串，无其他参数也需 `{}`
+- 冷启动历史回放使用当前工具目录的同一格式，保留原始代码与全部参数
+- raw 路由仅对声明了对应 cmd/code 字段的 function 生效；合并后执行完整 schema 校验，不能把普通 create_thread 误当 raw 工具
+- 对完整 JSON fence、BOM 和额外一层 JSON 字符串做有界兼容；说明文字、空值、数组、重复 raw 字段及非法 schema 仍拒绝，不猜测参数或盲目重放
+- 错误只增加 metadata 类型/长度诊断，不回显命令或参数正文；失败工具批次仍不交付、不进入历史缓存
 
 ## 获取源码
 
