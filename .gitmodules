@@ -1,0 +1,3 @@
+[submodule "vendor/codex-proxy-rs-3.18.2"]
+	path = vendor/codex-proxy-rs-3.18.2
+	url = https://github.com/zyycn/codex-proxy-rs.git

@@ -1,0 +1,20 @@
+[package]
+name = "cpr-bps-managed-plugin"
+version = "0.5.1"
+edition = "2024"
+
+[[bin]]
+name = "cpr-bps-plugin"
+path = "src/main.rs"
+
+[dependencies]
+gateway-plugin-sdk = { path = "../vendor/codex-proxy-rs-3.18.2/backend/crates/gateway-plugin/sdk", features = ["io"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["arbitrary_precision"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "io-util", "io-std", "sync", "fs", "time"] }
+base64 = "0.22"
+tempfile = "3"
+
+[profile.release]
+opt-level = 2
+strip = true

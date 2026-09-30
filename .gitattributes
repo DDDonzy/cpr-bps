@@ -1,0 +1,4 @@
+* text=auto eol=lf
+
+# SSE 测试数据必须保留末尾空行作为事件结束符
+*.sse whitespace=-blank-at-eof

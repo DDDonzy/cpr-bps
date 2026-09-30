@@ -1,0 +1,9 @@
+{
+  "models": [
+    "gpt-6-luna",
+    "gpt-6-astra",
+    "gpt-6-sol"
+  ],
+  "timeoutMs": 3600000,
+  "onFailure": "native_fallback"
+}

@@ -1,0 +1,71 @@
+{
+  "manifestVersion": 2,
+  "publisher": "donzy",
+  "name": "excel-bps",
+  "displayName": "Excel / Basis Points",
+  "version": "0.5.1",
+  "description": "Basis Points managed upstream adapter; official CPR host remains unmodified.",
+  "engines": {
+    "codex-proxy-rs": ">=3.18.2, <3.19.0"
+  },
+  "main": "bin/cpr-bps-plugin",
+  "runtime": "trustedProcess",
+  "contributes": {
+    "upstream_adapter": {
+      "version": 1,
+      "inputFormats": [
+        "openai"
+      ],
+      "outputFormats": [
+        "openai"
+      ]
+    },
+    "middleware": {
+      "version": 3,
+      "stages": [
+        "request"
+      ],
+      "inputFormats": [
+        "openai"
+      ],
+      "outputFormats": [
+        "openai"
+      ]
+    }
+  },
+  "configurationSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "models",
+      "timeoutMs",
+      "onFailure"
+    ],
+    "properties": {
+      "models": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "minLength": 1
+        },
+        "uniqueItems": true,
+        "minItems": 1
+      },
+      "timeoutMs": {
+        "type": "integer",
+        "minimum": 60000,
+        "maximum": 14400000,
+        "default": 3600000
+      },
+      "onFailure": {
+        "type": "string",
+        "enum": [
+          "reject",
+          "native_fallback"
+        ],
+        "default": "native_fallback"
+      }
+    }
+  },
+  "license": "UNLICENSED"
+}
