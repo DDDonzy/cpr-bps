@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "None",
+    "lib": [
+      "ES2020",
+      "DOM"
+    ],
+    "strict": true,
+    "rootDir": ".",
+    "outDir": "../plugin/web",
+    "skipLibCheck": true,
+    "sourceMap": false,
+    "ignoreDeprecations": "6.0"
+  },
+  "include": [
+    "app.ts"
+  ]
+}

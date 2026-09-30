@@ -3,8 +3,8 @@
   "publisher": "donzy",
   "name": "excel-bps",
   "displayName": "Excel / Basis Points",
-  "version": "0.5.1",
-  "description": "Basis Points managed upstream adapter; official CPR host remains unmodified.",
+  "version": "0.7.0",
+  "description": "BPS unified account and model settings with automatic native fallback.",
   "engines": {
     "codex-proxy-rs": ">=3.18.2, <3.19.0"
   },
@@ -31,41 +31,67 @@
       "outputFormats": [
         "openai"
       ]
+    },
+    "management": {
+      "version": 1
+    },
+    "scheduler": {
+      "version": 1
     }
   },
   "configurationSchema": {
     "type": "object",
-    "additionalProperties": false,
-    "required": [
-      "models",
-      "timeoutMs",
-      "onFailure"
-    ],
-    "properties": {
-      "models": {
+    "default": {
+      "enabled": true,
+      "accountIds": [],
+      "models": [
+        "gpt-6-luna",
+        "gpt-6-astra",
+        "gpt-6-sol"
+      ],
+      "timeoutMs": 3600000
+    },
+    "patternProperties": {
+      "^enabled$": {
+        "type": "boolean"
+      },
+      "^accountIds$": {
         "type": "array",
+        "maxItems": 200,
+        "uniqueItems": true,
         "items": {
           "type": "string",
           "minLength": 1
-        },
-        "uniqueItems": true,
-        "minItems": 1
+        }
       },
-      "timeoutMs": {
+      "^models$": {
+        "type": "array",
+        "maxItems": 256,
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "^timeoutMs$": {
         "type": "integer",
         "minimum": 60000,
-        "maximum": 14400000,
-        "default": 3600000
+        "maximum": 14400000
       },
-      "onFailure": {
+      "^onFailure$": {
         "type": "string",
         "enum": [
           "reject",
           "native_fallback"
-        ],
-        "default": "native_fallback"
+        ]
       }
-    }
+    },
+    "additionalProperties": false
   },
-  "license": "UNLICENSED"
+  "license": "UNLICENSED",
+  "resources": {
+    "web/index.html": "text/html",
+    "web/app.js": "application/javascript",
+    "web/style.css": "text/css"
+  }
 }

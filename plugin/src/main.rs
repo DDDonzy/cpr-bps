@@ -1,29 +1,21 @@
 mod adapter;
+mod config;
 mod fallback;
+mod management;
+mod middleware;
+mod scheduler;
 mod warmup;
 mod worker;
-use gateway_plugin_sdk::call::{
-    middleware::MiddlewareTransport,
-    upstream_adapter::{
-        BuiltinProvider, UpstreamAdapterDeclaration, UpstreamAdapterRegistration, UpstreamPath,
-        UpstreamPathPurpose, UpstreamTransport,
-    },
+use gateway_plugin_sdk::Manifest;
+use gateway_plugin_sdk::call::upstream_adapter::{
+    BuiltinProvider, UpstreamAdapterDeclaration, UpstreamAdapterRegistration, UpstreamPath,
+    UpstreamPathPurpose, UpstreamTransport,
 };
 use gateway_plugin_sdk::client::{
     PluginBuilder, PluginSession, RequestCall, SessionConfig, TypedReply, methods,
 };
-use gateway_plugin_sdk::{ErrorCode, Manifest, PluginFault};
-use serde::Deserialize;
-use serde_json::Value;
 use std::sync::Arc;
 
-#[derive(Clone, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Config {
-    models: Vec<String>,
-    timeout_ms: u64,
-    on_failure: String,
-}
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let session = PluginSession::accept(
@@ -33,7 +25,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             maximum_calls: 16,
             maximum_callbacks: 16,
             maximum_buffered_stream_chunks: 8,
-            maximum_stream_chunk_bytes: 16 * 1024 * 1024,
+            // 使用官方 SDK 的回调块预算，不把单块读取申请放大到 16 MiB。
             ..SessionConfig::default()
         },
     )
@@ -44,19 +36,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         return Err("plugin manifest mismatch".into());
     };
-    let config: Config = serde_json::from_value(handshake.configuration.clone())?;
-    if config.models.is_empty()
-        || config.models.iter().any(|s| s.trim() != s || s.is_empty())
-        || config.timeout_ms < 60_000
-        || !matches!(config.on_failure.as_str(), "reject" | "native_fallback")
-    {
-        return Err("invalid BPS settings".into());
-    }
+    let config = config::Config::parse(handshake.configuration.clone())
+        .map_err(|error| std::io::Error::other(error.message))?;
     let worker = worker::Worker::start().await?;
     let registry = Arc::new(fallback::Registry::default());
     let adapter_registry = registry.clone();
     let warmups = Arc::new(warmup::Store::default());
     let models = config.models.clone();
+    let adapter_config = config.clone();
+    let schedule_config = config.clone();
+    let schedule_registry = registry.clone();
     let registration = UpstreamAdapterRegistration {
         adapters: vec![UpstreamAdapterDeclaration {
             id: "basis-points".into(),
@@ -86,102 +75,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .on(methods::UPSTREAM_ADAPTER_EXECUTE, move |call| {
             let w = Arc::clone(&worker);
             let reg = adapter_registry.clone();
-            async move { adapter::execute(call, w, reg).await }
+            let config = adapter_config.clone();
+            async move { adapter::execute(call, w, reg, config).await }
         })?
-        .middleware(move |mut call: RequestCall| {
+        .on(methods::SCHEDULE_ACCOUNT, move |call| {
+            let config = schedule_config.clone();
+            let registry = schedule_registry.clone();
+            async move { scheduler::select(call, config, registry).await }
+        })?
+        .management(management::registration(), management::handle)?
+        .middleware(move |call: RequestCall| {
             let config = config.clone();
             let registry = registry.clone();
-            let warmups=warmups.clone();
-            async move {
-                let selected = call.request.head.operation == "generate"
-                    && call.request.head.protocol == "openai"
-                    && call
-                        .request
-                        .head
-                        .model
-                        .as_ref()
-                        .is_some_and(|m| config.models.contains(m));
-                if !selected {
-                    return call.next.run(call.request).await;
-                }
-                let settings = call.request.head.settings.as_object_mut().ok_or_else(|| {
-                    PluginFault::new(ErrorCode::Unsupported, "request settings unavailable")
-                })?;
-                settings.insert("timeout_ms".into(), config.timeout_ms.into());
-                let body =
-                    serde_json::from_slice::<Value>(&call.request.body).unwrap_or(Value::Null);
-                if call.request.head.transport==MiddlewareTransport::WebSocket {
-                    let conversation=body["prompt_cache_key"].as_str().map(str::to_owned).or_else(||call.request.head.headers.iter().find(|h|h.name.eq_ignore_ascii_case("session-id")||h.name.eq_ignore_ascii_case("session_id")).and_then(|h|String::from_utf8(h.value.clone()).ok())).unwrap_or_default();
-                    match warmups.prepare(&call.request.head.client_key_id,call.request.head.model.as_deref().unwrap_or_default(),&conversation,&call.request.head.request_id,&body)? {
-                        warmup::Action::Ready(response)=>return Ok(*response),
-                        warmup::Action::Rewrite(value)=>call.request.replace_body(serde_json::to_vec(&value).map_err(|_|PluginFault::new(ErrorCode::InvalidInput,"warmup body encoding"))?),
-                        warmup::Action::Pass=>{},
-                    }
-                }
-                let body=serde_json::from_slice::<Value>(&call.request.body).unwrap_or(Value::Null);
-                let full = fallback::complete_history(&body);
-                let guard = fallback::Guard::new(registry, call.request.head.request_id.clone());
-                let key = call.request.head.client_key_id.clone();
-                let model = call.request.head.model.clone().unwrap_or_default();
-                let websocket = call.request.head.transport == MiddlewareTransport::WebSocket;
-                let streaming =
-                    websocket || call.request.head.transport == MiddlewareTransport::HttpSse;
-                let host = call.host;
-                let own_id = call.context.instance_id;
-                let cancellation = call.cancellation;
-
-                // Known BPS-incompatible tiers are detected before creating an attempt.
-                // The original payload is handed to CPR; this plugin never sends it twice.
-                let bps_tier_unsupported=body["service_tier"].as_str().is_some_and(|v|!matches!(v,"auto"|"default"));
-                if config.on_failure=="native_fallback" && full && bps_tier_unsupported && !cancellation.is_cancelled() {
-                    match fallback::isolated_stack_checked(&host,&own_id).await {
-                        Ok(true)=>{},
-                        Ok(false)=>return fallback::error_response(PluginFault::new(ErrorCode::Rejected,"Other active plugins prevent safe replay"),"stack_guard",websocket),
-                        Err(error)=>return fallback::error_response(error,"stack_check",websocket),
-                    }
-                    return match fallback::native(host,key,model,None,body,streaming,websocket).await {
-                        Ok(response)=>Ok(response),
-                        Err(error)=>fallback::error_response(error,"preflight_native_start",websocket),
-                    };
-                }
-                let result = call.next.run(call.request).await;
-                let failed = result.as_ref().map_or(true, |r| r.status >= 400);
-                if failed {
-                    let fields=serde_json::json!({"attempted":guard.slot.attempted.load(std::sync::atomic::Ordering::SeqCst),"network_started":guard.slot.network.load(std::sync::atomic::Ordering::SeqCst),"confirmed":guard.slot.confirmed.load(std::sync::atomic::Ordering::SeqCst),"full_history":full,"cancelled":cancellation.is_cancelled(),"next_ok":result.is_ok(),"next_status":result.as_ref().map_or(0,|r|r.status)});
-                    let _=host.call("host.log",serde_json::json!({"event":"bps_fallback_guard","level":"info","fields":fields}),vec![]).await;
-                }
-
-                if !failed
-                    || config.on_failure != "native_fallback"
-                    || !full
-                    || cancellation.is_cancelled()
-                    || !guard.slot.safe()
-                {
-                    return result;
-                }
-                if !fallback::isolated_stack(&host, &own_id).await {
-                    return result;
-                }
-                if let Ok(mut response) = result {
-                    response.body.close().await?;
-                }
-                let account = guard
-                    .slot
-                    .account
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .clone();
-                match fallback::native(host, key, model, account, body, streaming, websocket).await {
-                    Ok(response) => Ok(response),
-                    Err(error) if !streaming => {
-                        let details=error.details.as_ref();
-                        let code=details.and_then(|v|v.get("code")).filter(|v|!v.is_null()).cloned().unwrap_or_else(||serde_json::to_value(error.code).unwrap_or(Value::Null));
-                        let value=serde_json::json!({"error":{"type":"server_error","code":code,"message":error.message},"bps_stage":"native_fallback_start"});
-                        Ok(gateway_plugin_sdk::client::MiddlewareResponse::direct("openai",error.http_status.unwrap_or(502),vec![],gateway_plugin_sdk::client::MiddlewareBody::from_frames(gateway_plugin_sdk::call::middleware::MiddlewareBodyFraming::JsonDocument,vec![gateway_plugin_sdk::call::middleware::MiddlewareBodyFrame::new(serde_json::to_vec(&value).map_err(|_|PluginFault::new(ErrorCode::Fault,"fallback error encoding"))?,true)])))
-                    },
-                    Err(error)=>Err(error),
-                }
-            }
+            let warmups = warmups.clone();
+            async move { middleware::handle(call, config, registry, warmups).await }
         })?
         .build()?;
     session.run(plugin).await?;

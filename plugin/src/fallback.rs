@@ -17,7 +17,7 @@ use std::{
     num::NonZeroUsize,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 
@@ -26,13 +26,49 @@ pub struct Safety {
     pub attempted: AtomicBool,
     pub network: AtomicBool,
     pub confirmed: AtomicBool,
+    inference_pending: AtomicUsize,
+    rejected_inference: AtomicUsize,
+    auxiliary_started: AtomicBool,
+    output_delivered: AtomicBool,
     pub account: Mutex<Option<String>>,
 }
 impl Safety {
     pub fn safe(&self) -> bool {
         self.attempted.load(Ordering::SeqCst)
             && self.confirmed.load(Ordering::SeqCst)
-            && !self.network.load(Ordering::SeqCst)
+            && self.inference_pending.load(Ordering::SeqCst) == 0
+            && !self.auxiliary_started.load(Ordering::SeqCst)
+            && !self.output_delivered.load(Ordering::SeqCst)
+            && (!self.network.load(Ordering::SeqCst)
+                || self.rejected_inference.load(Ordering::SeqCst) > 0)
+    }
+
+    pub fn begin_inference(&self) {
+        self.network.store(true, Ordering::SeqCst);
+        self.inference_pending.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub fn begin_auxiliary(&self) {
+        self.network.store(true, Ordering::SeqCst);
+        self.auxiliary_started.store(true, Ordering::SeqCst);
+    }
+
+    pub fn note_output(&self) {
+        self.output_delivered.store(true, Ordering::SeqCst);
+    }
+
+    /// 只有明确拒收、且未交付任何响应或产生附件副作用时才允许回落。
+    /// 超时、断链和 5xx 不能证明上游没有开始执行。
+    pub fn confirm_rejection(&self, status: u16) {
+        if matches!(status, 400 | 401 | 403 | 404 | 405 | 413 | 415 | 422 | 429)
+            && self
+                .inference_pending
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| v.checked_sub(1))
+                .is_ok()
+        {
+            self.rejected_inference.fetch_add(1, Ordering::SeqCst);
+            self.confirmed.store(true, Ordering::SeqCst);
+        }
     }
 }
 #[derive(Default)]
@@ -122,49 +158,33 @@ pub async fn isolated_stack_checked(host: &HostClient, own_id: &str) -> Result<b
         }
     }
     let v: Value = serde_json::from_slice(&bytes).map_err(|_| fault("stack check invalid JSON"))?;
-    let items = v["data"]
+    // 官方管理 API 在不同版本中返回 data 数组或 { instances: [...] }，两者都接受。
+    let data = v.get("data").unwrap_or(&v);
+    let items = data
         .as_array()
+        .or_else(|| data.get("instances").and_then(Value::as_array))
         .ok_or_else(|| fault("stack check expected instance list"))?;
-    Ok(items
-        .iter()
-        .all(|i| i["enabled"] != true || i["id"] == own_id))
-}
-pub async fn isolated_stack(host: &HostClient, own_id: &str) -> bool {
-    isolated_stack_checked(host, own_id).await.unwrap_or(false)
-}
-pub fn error_response(
-    error: PluginFault,
-    stage: &str,
-    websocket: bool,
-) -> Result<MiddlewareResponse, PluginFault> {
-    let code = error
-        .details
-        .as_ref()
-        .and_then(|v| v.get("code"))
-        .filter(|v| !v.is_null())
-        .cloned()
-        .unwrap_or_else(|| serde_json::to_value(error.code).unwrap_or(Value::Null));
-    let status = error.http_status.unwrap_or(502);
-    let mut value = json!({"error":{"type":"server_error","code":code,"message":error.message},"bps_stage":stage});
-    if websocket {
-        value["type"] = json!("error");
-        value["status"] = json!(status);
-    }
-    Ok(MiddlewareResponse::direct(
-        "openai",
-        status,
-        vec![MiddlewareHeader {
-            name: "content-type".into(),
-            value: b"application/json".to_vec(),
-        }],
-        MiddlewareBody::from_frames(
-            MiddlewareBodyFraming::JsonDocument,
-            vec![MiddlewareBodyFrame::new(
-                serde_json::to_vec(&value).map_err(|_| fault("error encoding"))?,
-                true,
-            )],
-        ),
-    ))
+    Ok(items.iter().all(|i| {
+        i["enabled"] != true
+            || i["id"] == own_id
+            || i["bindings"].as_array().is_some_and(|bindings| {
+                bindings.iter().all(|b| {
+                    !matches!(
+                        b["stage"].as_str(),
+                        Some(
+                            "http"
+                                | "websocket"
+                                | "service"
+                                | "request"
+                                | "attempt"
+                                | "routing"
+                                | "scheduling"
+                                | "upstream"
+                        )
+                    )
+                })
+            })
+    }))
 }
 async fn read(host: &HostClient, id: &str) -> Result<(ModelEventBatch, bool), PluginFault> {
     let reply = host
@@ -380,6 +400,29 @@ mod tests {
         assert!(s.safe());
         s.network.store(true, Ordering::SeqCst);
         assert!(!s.safe());
+    }
+    #[test]
+    fn explicit_rejection_falls_back_but_uncertain_or_effectful_requests_do_not() {
+        let state = Safety::default();
+        state.attempted.store(true, Ordering::SeqCst);
+        state.begin_inference();
+        state.confirm_rejection(422);
+        assert!(state.safe());
+        state.begin_inference();
+        state.confirm_rejection(502);
+        assert!(!state.safe());
+        let state = Safety::default();
+        state.attempted.store(true, Ordering::SeqCst);
+        state.begin_auxiliary();
+        state.begin_inference();
+        state.confirm_rejection(400);
+        assert!(!state.safe());
+        let state = Safety::default();
+        state.attempted.store(true, Ordering::SeqCst);
+        state.begin_inference();
+        state.confirm_rejection(429);
+        state.note_output();
+        assert!(!state.safe());
     }
 }
 

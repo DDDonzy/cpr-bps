@@ -1,6 +1,6 @@
 [package]
 name = "cpr-bps-managed-plugin"
-version = "0.5.1"
+version = "0.7.0"
 edition = "2024"
 
 [[bin]]

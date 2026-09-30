@@ -35,7 +35,10 @@ fn headers(content: &str, account: Option<&str>) -> Vec<(String, String)> {
         ("accept-encoding".into(), "identity".into()),
         ("origin".into(), "https://bps.openai.com".into()),
         ("x-basispoints-auth-mode".into(), "chatgpt".into()),
-        ("user-agent".into(), "cpr-bps-managed-plugin/0.3.0".into()),
+        (
+            "user-agent".into(),
+            concat!("cpr-bps-managed-plugin/", env!("CARGO_PKG_VERSION")).into(),
+        ),
     ];
     if let Some(account) = account {
         h.push(("x-openai-account-id".into(), account.into()));
@@ -206,7 +209,7 @@ async fn perform(
                     .as_str()
                     .ok_or_else(|| fail("attachment content type missing"))?;
                 if let Some(s) = &safety {
-                    s.network.store(true, Ordering::SeqCst);
+                    s.begin_auxiliary();
                 }
                 let response = call
                     .host
@@ -248,7 +251,7 @@ async fn perform(
         }
     };
     if let Some(s) = &safety {
-        s.network.store(true, Ordering::SeqCst);
+        s.begin_inference();
     }
     let response = call
         .host
@@ -264,6 +267,9 @@ async fn perform(
         .await?;
     if !(200..300).contains(&response.status) {
         let status = response.status;
+        if let Some(s) = &safety {
+            s.confirm_rejection(status);
+        }
         let raw = response.body.collect(16 * 1024 * 1024).await?;
         http_failure(&sender, status, raw).await?;
         return Ok(());
@@ -302,6 +308,7 @@ async fn perform(
            let mut event=UpstreamAdapterEvent::new(ExecutionEvent{facts,wire,host:None});
            if let Some(value)=v.get("failure"){event.failure=Some(serde_json::from_value(value.clone()).map_err(|_|fail("invalid converter failure"))?);failed=true;}
            if is_terminal {terminal=true;event.service_tier=v["service_tier"].as_str().map(str::to_owned);if let Some(id)=v["response"]["id"].as_str(){event.continuation=Some(UpstreamContinuation{scope:ContinuationScope::Persisted,upstream_response_id:id.to_owned(),state:json!({"history_scope":scope}).as_object().cloned().unwrap_or_default()});}}
+           if let Some(s) = &safety { s.note_output(); }
            send(&sender,event).await?;
           },
           Some("error")=>{if !failed{local_error(&sender,&v).await?;failed=true;}},
@@ -329,6 +336,7 @@ pub async fn execute(
     call: TypedCall<UpstreamAdapterRequest>,
     worker: Arc<Worker>,
     registry: Arc<Registry>,
+    config: crate::config::Config,
 ) -> Result<TypedReply<Empty>, PluginFault> {
     let (sender, stream) = ResponseStream::channel(NonZeroUsize::new(4).expect("nonzero"));
     let safety = call
@@ -342,6 +350,16 @@ pub async fn execute(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
             Some(call.request.account_id.clone());
+    }
+    if !config.enabled || !config.allows_account(&call.request.account_id) {
+        if let Some(s) = &safety {
+            s.confirmed.store(true, Ordering::SeqCst);
+        }
+        // 尚未发出任何上游请求，交由宿主换号或由请求中间件安全回落原生。
+        return Err(PluginFault::new(
+            ErrorCode::Rejected,
+            "当前账号不在 BPS 账号范围内",
+        ));
     }
     let cancellation = call.cancellation.clone();
     tokio::spawn(async move {

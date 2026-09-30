@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BPS 设置</title><link rel="stylesheet" href="style.css"></head>
+<body><main class="settings">
+<div id="loading" class="notice">正在读取设置…</div><div id="error" class="notice error" role="alert" hidden></div>
+<div id="form" hidden>
+<section class="panel"><div class="enable-row"><div><label for="enabled" class="field-title">启用 BPS</label><p class="hint">使用选定账号和模型，其余请求保持 CPR 原生处理。</p></div><label class="switch"><input id="enabled" type="checkbox"><span></span></label></div></section>
+<section class="panel"><div class="field-heading"><h2>使用账号</h2><span id="account-count" class="count"></span></div>
+<div class="mode" role="group" aria-label="账号范围"><label><input type="radio" name="account-mode" id="all-accounts" value="all">全部可用 OAuth 账号</label><label><input type="radio" name="account-mode" id="selected-accounts" value="selected">选择账号</label></div>
+<div id="account-picker" hidden><input id="account-search" class="search" type="search" placeholder="搜索账号或邮箱" aria-label="搜索账号"><div id="accounts" class="choices accounts"></div></div>
+<p id="account-hint" class="hint"></p></section>
+<section class="panel"><div class="field-heading"><h2>应用模型</h2><span id="model-count" class="count"></span></div><input id="model-search" class="search" type="search" placeholder="搜索模型" aria-label="搜索模型"><div id="models" class="choices models"></div><p class="hint">模型仅在此处设置一次，保存后自动应用。</p></section>
+<section class="panel"><div class="fallback"><span class="dot"></span><strong>失败自动回落原生</strong></div><p class="hint">不重复已有输出或外部操作；无法确认安全时保留原始错误。</p><details><summary>更多设置</summary><div class="timeout-row"><label for="timeout">请求等待时间</label><div><input id="timeout" type="number" min="1" max="240" step="1"><span>分钟</span></div></div></details></section>
+<footer><span id="save-status" class="hint" aria-live="polite"></span><div class="actions"><button id="reload" type="button" class="secondary">重新加载</button><button id="save" type="button" class="primary">保存设置</button></div></footer>
+</div></main>
+<script src="app.js"></script></body></html>
