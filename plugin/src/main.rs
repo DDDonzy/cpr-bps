@@ -13,8 +13,7 @@ use gateway_plugin_sdk::call::upstream_adapter::{
     UpstreamPathPurpose, UpstreamTransport,
 };
 use gateway_plugin_sdk::client::{
-    MiddlewareCall, MiddlewareResult, PluginBuilder, PluginSession, SessionConfig, TypedReply,
-    methods,
+    PluginBuilder, PluginSession, RequestCall, SessionConfig, TypedReply, methods,
 };
 use std::sync::Arc;
 
@@ -87,23 +86,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             async move { scheduler::select(call, config, registry).await }
         })?
         .management(management::registration(), management::handle)?
-        .middleware(move |call: MiddlewareCall| {
+        .middleware(move |call: RequestCall| {
             let config = config.clone();
             let registry = registry.clone();
             let warmups = warmups.clone();
-            async move {
-                match call {
-                    MiddlewareCall::Request(call) => {
-                        middleware::handle(*call, config, registry, warmups)
-                            .await
-                            .map(MiddlewareResult::Request)
-                    }
-                    MiddlewareCall::Http(call) => {
-                        route_log::handle(*call).await.map(MiddlewareResult::Http)
-                    }
-                    other => other.forward().await,
-                }
-            }
+            async move { middleware::handle(call, config, registry, warmups).await }
         })?
         .build()?;
     session.run(plugin).await?;

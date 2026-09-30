@@ -73,9 +73,8 @@ impl Config {
     }
 
     pub fn bindings(&self) -> Vec<Value> {
-        let log = json!({"contribution":"donzy.excel-bps.middleware","stage":"http","order":0,"failurePolicy":"delegate","clientKeyIds":[],"accountGroupIds":[],"providerIds":[],"models":[],"identityBindings":[]});
         if !self.enabled || self.account_ids.is_empty() || self.models.is_empty() {
-            return vec![log];
+            return Vec::new();
         }
         [
             (
@@ -113,7 +112,6 @@ impl Config {
                 "providerIds": providers, "models": [], "identityBindings": []
             })
         })
-        .chain(std::iter::once(log))
         .collect()
     }
 }
@@ -138,7 +136,6 @@ mod tests {
             config
                 .bindings()
                 .iter()
-                .filter(|b| b["stage"] != "http")
                 .all(|b| b["failurePolicy"] == "reject")
         );
         assert!(Config::parse(json!({})).unwrap().allows_fallback());
@@ -151,15 +148,14 @@ mod tests {
             ..Config::default()
         };
         let bindings = config.bindings();
-        assert_eq!(bindings.len(), 4);
+        assert_eq!(bindings.len(), 3);
         for binding in bindings {
             assert_eq!(binding["models"], json!([]));
             assert_eq!(binding["clientKeyIds"], json!([]));
         }
         let mut disabled = config;
         disabled.enabled = false;
-        assert_eq!(disabled.bindings().len(), 1);
-        assert_eq!(disabled.bindings()[0]["stage"], "http");
+        assert!(disabled.bindings().is_empty());
     }
     #[test]
     fn validates_account_and_model_selection() {
@@ -171,7 +167,7 @@ mod tests {
                 .unwrap()
                 .bindings()
                 .len(),
-            1
+            0
         );
         assert!(Config::parse(json!({"accountIds":["a","a"]})).is_err());
         let config = Config::parse(json!({"accountIds":["acct_one"]})).unwrap();

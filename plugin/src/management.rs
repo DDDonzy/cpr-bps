@@ -25,6 +25,7 @@ pub fn registration() -> ManagementRegistration {
             ("GET", "settings"),
             ("POST", "settings"),
             ("GET", "catalog"),
+            ("POST", "decorate-logs"),
         ]
         .into_iter()
         .map(|(method, path)| ManagementRoute {
@@ -187,6 +188,14 @@ struct Save {
 }
 
 async fn handle_inner(call: &TypedCall<ManagementRequest>) -> Result<Value, PluginFault> {
+    if call.request.method == "POST" && call.request.path == "decorate-logs" {
+        if call.payload.len() > 4 * 1024 * 1024 {
+            return Err(PluginFault::new(ErrorCode::InvalidInput, "日志响应过大"));
+        }
+        let value = serde_json::from_slice(&call.payload)
+            .map_err(|_| PluginFault::new(ErrorCode::InvalidInput, "日志格式无效"))?;
+        return crate::route_log::decorate(&call.host, value).await;
+    }
     let current = instance(&call.host, &call.context.instance_id).await?;
     let config = Config::parse(current["configuration"].clone())?;
     match (call.request.method.as_str(), call.request.path.as_str()) {

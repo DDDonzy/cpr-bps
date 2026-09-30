@@ -3,7 +3,7 @@
   "publisher": "donzy",
   "name": "excel-bps",
   "displayName": "Excel / Basis Points",
-  "version": "0.9.4",
+  "version": "0.10.0",
   "description": "BPS account and model routing with selectable failure policy and route logs.",
   "engines": {
     "codex-proxy-rs": ">=3.18.2, <3.19.0"
@@ -23,8 +23,7 @@
     "middleware": {
       "version": 3,
       "stages": [
-        "request",
-        "http"
+        "request"
       ],
       "inputFormats": [
         "openai"

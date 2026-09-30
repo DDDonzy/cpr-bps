@@ -1,5 +1,5 @@
 //! 路由事实由实际执行点记录；仅装饰已通过宿主鉴权的日志响应，不改计费或请求路径。
-use gateway_plugin_sdk::client::{HostClient, HttpBody, HttpCall, HttpFrame, HttpResponse};
+use gateway_plugin_sdk::client::HostClient;
 use gateway_plugin_sdk::{ErrorCode, PluginFault};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -91,85 +91,48 @@ fn annotate(row: &mut Value, fact: &Value) {
         });
     }
 }
-fn target(method: &str, uri: &str) -> bool {
-    method == "GET"
-        && matches!(
-            uri.split('?').next().unwrap_or(""),
-            "/api/admin/usage/records"
-                | "/api/admin/usage/records/detail"
-                | "/api/admin/operations/errors"
-        )
-}
-pub async fn handle(call: HttpCall) -> Result<HttpResponse, PluginFault> {
-    let selected = target(&call.request.method, &call.request.uri);
-    let mut response = call.next.run(call.request).await?;
-    if !selected
-        || response.status != 200
-        || response
-            .headers
-            .iter()
-            .any(|h| h.name.eq_ignore_ascii_case("content-encoding") && h.value != b"identity")
-    {
-        return Ok(response);
-    }
-    let mut bytes = Vec::new();
-    while let Some(frame) = response.body.read().await? {
-        if let HttpFrame::Data(data) = frame {
-            bytes.extend(data);
+/// 只读管理接口接收已鉴权的日志 JSON；不再挂接全局 HTTP 入口。
+pub async fn decorate(host: &HostClient, mut value: Value) -> Result<Value, PluginFault> {
+    let Some(data) = value.get_mut("data") else {
+        return Ok(value);
+    };
+    let mut cache: HashMap<String, Value> = HashMap::new();
+    let rows: Vec<&mut Value> =
+        if let Some(items) = data.get_mut("items").and_then(Value::as_array_mut) {
+            if items.len() > 100 {
+                return Err(PluginFault::new(ErrorCode::InvalidInput, "日志页过大"));
+            }
+            items.iter_mut().collect()
+        } else {
+            vec![data]
+        };
+    for row in rows {
+        let id = row["requestId"]
+            .as_str()
+            .or_else(|| row["id"].as_str())
+            .unwrap_or("")
+            .to_owned();
+        if id.is_empty() {
+            continue;
+        }
+        let key = bucket(&id);
+        if !cache.contains_key(&key) {
+            cache.insert(key.clone(), read(host, &key).await?);
+        }
+        if let Some(fact) = cache[&key]["value"]["entries"]
+            .as_array()
+            .and_then(|list| list.iter().find(|v| v["requestId"] == id))
+        {
+            annotate(row, fact);
         }
     }
-    if let Ok(mut value) = serde_json::from_slice::<Value>(&bytes) {
-        let mut empty = Value::Null;
-        let data = value.get_mut("data").unwrap_or(&mut empty);
-        let mut cache: HashMap<String, Value> = HashMap::new();
-        let rows: Vec<&mut Value> =
-            if let Some(items) = data.get_mut("items").and_then(Value::as_array_mut) {
-                items.iter_mut().collect()
-            } else {
-                vec![data]
-            };
-        for row in rows {
-            let id = row["requestId"]
-                .as_str()
-                .or_else(|| row["id"].as_str())
-                .unwrap_or("")
-                .to_owned();
-            if id.is_empty() {
-                continue;
-            }
-            let key = bucket(&id);
-            if !cache.contains_key(&key) {
-                cache.insert(
-                    key.clone(),
-                    read(&call.host, &key).await.unwrap_or(Value::Null),
-                );
-            }
-            if let Some(fact) = cache[&key]["value"]["entries"]
-                .as_array()
-                .and_then(|list| list.iter().find(|v| v["requestId"] == id))
-            {
-                annotate(row, fact);
-            }
-        }
-        bytes = serde_json::to_vec(&value).unwrap_or(bytes);
-    }
-    response.headers.retain(|h| {
-        !matches!(
-            h.name.to_ascii_lowercase().as_str(),
-            "content-length" | "etag"
-        )
-    });
-    response.body = HttpBody::from_bytes(bytes);
-    Ok(response)
+    Ok(value)
 }
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
     fn only_decorates_authorized_log_shapes_and_preserves_facts() {
-        assert!(target("GET", "/api/admin/usage/records?pageSize=20"));
-        assert!(!target("POST", "/v1/responses"));
-        assert!(!target("GET", "/api/admin/usage/records/summary"));
         let mut row =
             json!({"route":"/v1/responses","inputTokens":19,"clientTransport":"internal_plugin"});
         annotate(&mut row, &json!({"channel":"native_fallback"}));
