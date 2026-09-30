@@ -93,24 +93,34 @@ pub async fn handle(
     } else {
         true
     };
-    if full && !cancellation.is_cancelled() && (bps_tier_unsupported || !bps_viable) {
-        // 尚未创建 attempt，把原始正文交给 CPR 原生通道是安全的。
-        // 若当前环境不适合重放，则继续走 BPS，而不是向客户端返回拒绝。
+    if config.allows_fallback()
+        && full
+        && !cancellation.is_cancelled()
+        && (bps_tier_unsupported || !bps_viable)
+    {
+        // 原生子请求一旦开始，失败也不能再重发到 BPS，避免不确定状态下重复执行。
         if matches!(
             fallback::isolated_stack_checked(&host, &own_id).await,
             Ok(true)
-        ) && let Ok(response) = fallback::native(
-            host.clone(),
-            key.clone(),
-            model.clone(),
-            None,
-            body.clone(),
-            streaming,
-            websocket,
-        )
-        .await
-        {
-            return Ok(response);
+        ) {
+            return fallback::native(
+                host.clone(),
+                fallback::NativeRequest {
+                    parent_id: &request_id,
+                    reason: if bps_tier_unsupported {
+                        "service_tier_unsupported"
+                    } else {
+                        "no_bps_account"
+                    },
+                    key: key.clone(),
+                    model: model.clone(),
+                    account: None,
+                    body: body.clone(),
+                    streaming,
+                    websocket,
+                },
+            )
+            .await;
         }
     }
     let mut result = call.next.run(call.request).await;
@@ -129,6 +139,18 @@ pub async fn handle(
         || matches!(&first, Some(Err(_)))
         || matches!(&first, Some(Ok(Some(frame))) if is_error_frame(frame));
     if failed {
+        crate::route_log::record(
+            &host,
+            &request_id,
+            if config.allows_fallback() {
+                "bps_error"
+            } else {
+                "rejected"
+            },
+            "bps_request_failed",
+            None,
+        )
+        .await;
         let fields = serde_json::json!({"attempted":guard.slot.attempted.load(std::sync::atomic::Ordering::SeqCst),"network_started":guard.slot.network.load(std::sync::atomic::Ordering::SeqCst),"confirmed":guard.slot.confirmed.load(std::sync::atomic::Ordering::SeqCst),"full_history":full,"cancelled":cancellation.is_cancelled(),"next_ok":result.is_ok(),"next_status":result.as_ref().map_or(0,|r|r.status)});
         let _ = host
             .call(
@@ -139,7 +161,12 @@ pub async fn handle(
             .await;
     }
 
-    if !failed || !full || cancellation.is_cancelled() || !guard.slot.safe() {
+    if !config.allows_fallback()
+        || !failed
+        || !full
+        || cancellation.is_cancelled()
+        || !guard.slot.safe()
+    {
         return forward(result, first, guard).await;
     }
     let stack = fallback::isolated_stack_checked(&host, &own_id).await;
@@ -155,7 +182,20 @@ pub async fn handle(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
-    let native = fallback::native(host, key, model, account, body, streaming, websocket).await;
+    let native = fallback::native(
+        host,
+        fallback::NativeRequest {
+            parent_id: &request_id,
+            reason: "bps_failed_before_output",
+            key,
+            model,
+            account,
+            body,
+            streaming,
+            websocket,
+        },
+    )
+    .await;
     match native {
         Ok(response) => Ok(response),
         Err(error) if !streaming => {

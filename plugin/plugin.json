@@ -3,8 +3,8 @@
   "publisher": "donzy",
   "name": "excel-bps",
   "displayName": "Excel / Basis Points",
-  "version": "0.7.0",
-  "description": "BPS unified account and model settings with automatic native fallback.",
+  "version": "0.9.1",
+  "description": "BPS account and model routing with selectable failure policy and route logs.",
   "engines": {
     "codex-proxy-rs": ">=3.18.2, <3.19.0"
   },
@@ -23,7 +23,8 @@
     "middleware": {
       "version": 3,
       "stages": [
-        "request"
+        "request",
+        "http"
       ],
       "inputFormats": [
         "openai"
@@ -49,7 +50,8 @@
         "gpt-6-astra",
         "gpt-6-sol"
       ],
-      "timeoutMs": 3600000
+      "timeoutMs": 3600000,
+      "onFailure": "native_fallback"
     },
     "patternProperties": {
       "^enabled$": {
@@ -92,6 +94,29 @@
   "resources": {
     "web/index.html": "text/html",
     "web/app.js": "application/javascript",
-    "web/style.css": "text/css"
-  }
+    "web/style.css": "text/css",
+    "web/THIRD_PARTY_NOTICES.txt": "text/plain"
+  },
+  "state": [
+    {
+      "namespace": "bps.routes",
+      "schemaVersion": 1,
+      "schema": {
+        "type": "object",
+        "required": [
+          "entries"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "maxItems": 64
+          }
+        },
+        "additionalProperties": false
+      },
+      "maximumRecords": 128,
+      "maximumBytes": 4194304,
+      "maximumValueBytes": 32768
+    }
+  ]
 }

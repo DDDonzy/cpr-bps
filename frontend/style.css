@@ -1,0 +1,8 @@
+@import '@codex-proxy/ui/styles.css';
+@import 'tailwindcss/theme.css' layer(theme);
+@import '@codex-proxy/ui/tailwind.css';
+@import 'tailwindcss/utilities.css' layer(utilities);
+@source './App.vue';
+html { scrollbar-width:thin;scrollbar-color:var(--cp-scrollbar-thumb-bg) transparent; }
+html[data-theme='dark'] { color-scheme:dark; }
+html[data-theme='light'] { color-scheme:light; }

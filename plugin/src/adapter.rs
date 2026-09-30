@@ -253,6 +253,10 @@ async fn perform(
     if let Some(s) = &safety {
         s.begin_inference();
     }
+    if let Some(id) = call.context.request_id.as_deref() {
+        crate::route_log::record(&call.host, id, "basis_points", "inference_dispatched", None)
+            .await;
+    }
     let response = call
         .host
         .upstream_http(
@@ -271,6 +275,16 @@ async fn perform(
             s.confirm_rejection(status);
         }
         let raw = response.body.collect(16 * 1024 * 1024).await?;
+        if let Some(id) = call.context.request_id.as_deref() {
+            crate::route_log::record(
+                &call.host,
+                id,
+                "bps_error",
+                &format!("upstream_http_{status}"),
+                None,
+            )
+            .await;
+        }
         http_failure(&sender, status, raw).await?;
         return Ok(());
     }
@@ -312,7 +326,7 @@ async fn perform(
            send(&sender,event).await?;
           },
           Some("error")=>{if !failed{local_error(&sender,&v).await?;failed=true;}},
-          Some("end")=>{if !terminal && !failed{return Err(fail("BPS stream ended without a terminal event"))};return Ok(())},
+          Some("end")=>{if !terminal && !failed{return Err(fail("BPS stream ended without a terminal event"))};if failed && let Some(id)=call.context.request_id.as_deref(){crate::route_log::record(&call.host,id,"bps_error","stream_failed",None).await;} return Ok(())},
           _=>return Err(fail("unexpected converter stream event"))
          }}
         }
@@ -361,11 +375,27 @@ pub async fn execute(
             "当前账号不在 BPS 账号范围内",
         ));
     }
+    let log_host = call.host.clone();
+    let log_id = call.context.request_id.clone();
     let cancellation = call.cancellation.clone();
     tokio::spawn(async move {
         let sink = sender.clone();
         let result = tokio::select! {_=cancellation.cancelled()=>Err(PluginFault::new(ErrorCode::Cancelled,"request cancelled")),r=perform(call,sink,worker,safety.clone())=>r};
         if let Err(error) = result {
+            if let Some(id) = log_id.as_deref() {
+                crate::route_log::record(
+                    &log_host,
+                    id,
+                    "bps_error",
+                    if cancellation.is_cancelled() {
+                        "cancelled"
+                    } else {
+                        "adapter_failed"
+                    },
+                    None,
+                )
+                .await;
+            }
             if !cancellation.is_cancelled()
                 && let Some(s) = &safety
                 && !s.network.load(Ordering::SeqCst)

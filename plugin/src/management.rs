@@ -48,7 +48,7 @@ pub fn registration() -> ManagementRegistration {
         pages: vec![ManagementPage {
             id: "settings".into(),
             title: "BPS 设置".into(),
-            description: Some("统一管理账号与模型，失败时自动安全回落原生".into()),
+            description: Some("管理账号、模型与失败处理".into()),
             entry: "web/index.html".into(),
             icon: None,
         }],

@@ -3,6 +3,7 @@ mod config;
 mod fallback;
 mod management;
 mod middleware;
+mod route_log;
 mod scheduler;
 mod warmup;
 mod worker;
@@ -12,7 +13,8 @@ use gateway_plugin_sdk::call::upstream_adapter::{
     UpstreamPathPurpose, UpstreamTransport,
 };
 use gateway_plugin_sdk::client::{
-    PluginBuilder, PluginSession, RequestCall, SessionConfig, TypedReply, methods,
+    MiddlewareCall, MiddlewareResult, PluginBuilder, PluginSession, SessionConfig, TypedReply,
+    methods,
 };
 use std::sync::Arc;
 
@@ -22,9 +24,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tokio::io::stdin(),
         tokio::io::stdout(),
         SessionConfig {
-            maximum_calls: 16,
-            maximum_callbacks: 16,
-            maximum_buffered_stream_chunks: 8,
+            // 业务并发由宿主管理，插件侧沿用 SDK 默认调用容量。
+            maximum_calls: 32,
+            maximum_callbacks: 32,
+            maximum_buffered_stream_chunks: 32,
             // 使用官方 SDK 的回调块预算，不把单块读取申请放大到 16 MiB。
             ..SessionConfig::default()
         },
@@ -84,11 +87,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             async move { scheduler::select(call, config, registry).await }
         })?
         .management(management::registration(), management::handle)?
-        .middleware(move |call: RequestCall| {
+        .middleware(move |call: MiddlewareCall| {
             let config = config.clone();
             let registry = registry.clone();
             let warmups = warmups.clone();
-            async move { middleware::handle(call, config, registry, warmups).await }
+            async move {
+                match call {
+                    MiddlewareCall::Request(call) => {
+                        middleware::handle(*call, config, registry, warmups)
+                            .await
+                            .map(MiddlewareResult::Request)
+                    }
+                    MiddlewareCall::Http(call) => {
+                        route_log::handle(*call).await.map(MiddlewareResult::Http)
+                    }
+                    other => other.forward().await,
+                }
+            }
         })?
         .build()?;
     session.run(plugin).await?;

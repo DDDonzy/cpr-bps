@@ -312,15 +312,30 @@ async fn pump(
     }
     result
 }
+pub struct NativeRequest<'a> {
+    pub parent_id: &'a str,
+    pub reason: &'a str,
+    pub key: String,
+    pub model: String,
+    pub account: Option<String>,
+    pub body: Value,
+    pub streaming: bool,
+    pub websocket: bool,
+}
 pub async fn native(
     host: HostClient,
-    key: String,
-    model: String,
-    account: Option<String>,
-    mut body: Value,
-    streaming: bool,
-    websocket: bool,
+    request: NativeRequest<'_>,
 ) -> Result<MiddlewareResponse, PluginFault> {
+    let NativeRequest {
+        parent_id,
+        reason,
+        key,
+        model,
+        account,
+        mut body,
+        streaming,
+        websocket,
+    } = request;
     body["stream"] = Value::Bool(true);
     let request = ModelExecuteRequest {
         client_key_id: Some(key),
@@ -341,6 +356,22 @@ pub async fn native(
         .map_err(remote)?;
     let result: ModelStreamResult =
         serde_json::from_value(reply.result).map_err(|_| fault("invalid native stream handle"))?;
+    crate::route_log::record(
+        &host,
+        parent_id,
+        "native_fallback",
+        reason,
+        Some(&result.request_id),
+    )
+    .await;
+    crate::route_log::record(
+        &host,
+        &result.request_id,
+        "native_fallback",
+        reason,
+        Some(parent_id),
+    )
+    .await;
     let framing = if streaming && !websocket {
         MiddlewareBodyFraming::SseEvent
     } else {

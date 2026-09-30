@@ -1,19 +1,21 @@
 {
   "compilerOptions": {
-    "target": "ES2020",
-    "module": "None",
-    "lib": [
-      "ES2020",
-      "DOM"
-    ],
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
     "strict": true,
-    "rootDir": ".",
-    "outDir": "../plugin/web",
     "skipLibCheck": true,
-    "sourceMap": false,
-    "ignoreDeprecations": "6.0"
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "types": [
+      "vite/client"
+    ]
   },
   "include": [
-    "app.ts"
+    "*.ts",
+    "*.vue"
   ]
 }
