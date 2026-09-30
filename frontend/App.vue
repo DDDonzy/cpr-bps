@@ -9,6 +9,7 @@ import { BaseScrollbar } from '@codex-proxy/ui/scrollbar'
 import { BaseSelect } from '@codex-proxy/ui/select'
 import { BaseSwitch } from '@codex-proxy/ui/switch'
 import { BaseTag } from '@codex-proxy/ui/tag'
+import { BaseTable, type BaseTableColumn } from '@codex-proxy/ui/table'
 import { normalized, request, same, type Account, type Catalog, type Config, type Settings } from './api'
 
 const settings=ref<Settings|null>(null)
@@ -23,6 +24,13 @@ const allModelsSelected=computed(()=>allModels.value.length>0&&allModels.value.e
 const allSelected=computed(()=>catalog.value.accounts.length>0&&catalog.value.accounts.every(a=>config.value.accountIds.includes(a.id)))
 const timeout=computed({get:()=>config.value.timeoutMs/60000,set:(value:number)=>{config.value.timeoutMs=value*60000;changed()}})
 const policy=computed({get:()=>config.value.onFailure,set:(value:string)=>{config.value.onFailure=value as Config['onFailure'];changed()}})
+const accountColumns: BaseTableColumn<Account>[] = [
+ {key:'selection',label:'选择',kind:'selection'},
+ {key:'identity',label:'账号',kind:'identity',size:'2xl'},
+ {key:'plan',label:'套餐',kind:'status',size:'sm',fixedWidth:true},
+ {key:'status',label:'账号状态',kind:'status',size:'md',fixedWidth:true},
+ {key:'bpsStatus',label:'BPS 状态',kind:'status',size:'md',fixedWidth:true},
+]
 const policyOptions=[{label:'回落原生',value:'native_fallback'},{label:'拒绝请求',value:'reject'}]
 function changed(){status.value='有未保存的修改'}
 function selectAccount(id:string,checked:boolean){const selected=new Set(config.value.accountIds);checked?selected.add(id):selected.delete(id);config.value.accountIds=[...selected];changed()}
@@ -74,17 +82,20 @@ onMounted(load)
     <BaseCard padding="compact">
      <div class="mb-3 flex items-center justify-between gap-3"><h2 class="text-cp font-heavy">使用账号</h2><div class="flex items-center gap-2"><span class="text-cp-sm text-cp-text-tertiary">已选 {{config.accountIds.length}} / {{catalog.accounts.length}} 个</span><BaseButton size="sm" :disabled="locked" @click="toggleAll">{{allSelected?'取消全选':'全选'}}</BaseButton></div></div>
      <BaseInput v-model="accountSearch" type="search" placeholder="搜索账号名称、邮箱或 ID" aria-label="搜索账号" :disabled="locked" class="mb-3" />
-     <BaseScrollbar max-height="288px" aria-label="账号列表">
-      <div class="flex flex-col gap-2 pr-2">
-       <BaseCheckbox v-for="a in accounts" :key="a.id" :model-value="config.accountIds.includes(a.id)" :label="identity(a)" :disabled="locked" show-label class="w-full rounded-cp bg-cp-fill-quaternary p-3 [&>span:last-child]:flex-1" @update:model-value="value=>selectAccount(a.id,value)">
-        <template #label><div class="flex min-w-0 items-center gap-3">
-         <span class="inline-flex size-9 shrink-0 items-center justify-center rounded-lg text-cp font-extrabold" :class="avatarTone(a)">{{title(a).slice(0,1).toUpperCase()}}</span>
-         <div class="min-w-0 flex-1"><div class="flex min-w-0 flex-wrap items-center gap-2"><span class="min-w-0 truncate text-cp font-heavy" :title="identity(a)">{{title(a)}}</span><BaseTag v-if="plan(a)" size="sm" type="primary" round>{{plan(a)}}</BaseTag><BaseTag size="sm" :type="a.enabled?'success':'neutral'" round>{{a.enabled?'已启用':'未启用'}}</BaseTag></div><div class="mt-1 truncate font-mono text-cp-xs text-cp-text-quaternary">{{identity(a)}}</div></div>
-        </div></template>
-       </BaseCheckbox>
-       <p v-if="!accounts.length" class="p-3 text-cp-sm text-cp-text-tertiary">没有匹配的 OAuth 账号</p>
-      </div>
-     </BaseScrollbar>
+     <BaseTable :columns="accountColumns" :rows="accounts" :selected-row-keys="config.accountIds" row-key="id" empty-text="没有匹配的 OAuth 账号" show-header-when-empty class="h-80" aria-label="账号列表">
+      <template #selection="{row}">
+       <BaseCheckbox :model-value="config.accountIds.includes(row.id)" :label="identity(row)" :disabled="locked" @update:model-value="value=>selectAccount(row.id,value)" />
+      </template>
+      <template #identity="{row}">
+       <div class="flex min-w-0 items-center gap-3">
+        <span class="inline-flex size-9 shrink-0 items-center justify-center rounded-lg text-cp font-extrabold" :class="avatarTone(row)">{{title(row).slice(0,1).toUpperCase()}}</span>
+        <div class="min-w-0 flex-1"><div class="truncate text-cp font-heavy" :title="identity(row)">{{title(row)}}</div><div class="mt-1 truncate font-mono text-cp-xs text-cp-text-quaternary">{{identity(row)}}</div></div>
+       </div>
+      </template>
+      <template #plan="{row}"><BaseTag v-if="plan(row)" size="sm" type="primary" round>{{plan(row)}}</BaseTag><span v-else class="text-cp-text-quaternary">—</span></template>
+      <template #status="{row}"><BaseTag size="sm" :type="row.enabled?'success':'neutral'" round>{{row.enabled?'已启用':'未启用'}}</BaseTag></template>
+      <template #bpsStatus="{row}"><BaseTag size="sm" :type="config.enabled&&config.accountIds.includes(row.id)?'success':'neutral'" round>{{config.enabled&&config.accountIds.includes(row.id)?'启用':'未启用'}}</BaseTag></template>
+     </BaseTable>
     </BaseCard>
     <BaseCard padding="compact">
      <div class="mb-3 flex items-center justify-between gap-3"><h2 class="text-cp font-heavy">应用模型</h2><div class="flex items-center gap-2"><span class="text-cp-sm text-cp-text-tertiary">已选 {{config.models.length}} / {{allModels.length}} 个</span><BaseButton size="sm" :disabled="locked" :aria-label="allModelsSelected?'取消全选模型':'全选模型'" @click="toggleAllModels">{{allModelsSelected?'取消全选':'全选'}}</BaseButton></div></div>
@@ -96,7 +107,6 @@ onMounted(load)
     </BaseCard>
     <BaseCard padding="compact">
      <div class="flex items-center justify-between gap-4"><h2 class="text-cp font-heavy">失败处理</h2><BaseSelect v-model="policy" :options="policyOptions" :disabled="locked" aria-label="失败处理" class="w-44" /></div>
-     <p class="mt-3 text-cp-sm text-cp-text-secondary">回落仅在确认可以安全重试时执行，拒绝模式直接返回错误</p>
      <div class="mt-5 flex items-center justify-between gap-4"><span class="text-cp font-emphasis">请求等待时间</span><BaseNumberInput v-model="timeout" label="请求等待时间" unit="min" :min="1" :max="240" :disabled="locked" class="w-44" /></div>
     </BaseCard>
    </div>
