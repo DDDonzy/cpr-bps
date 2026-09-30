@@ -1,6 +1,6 @@
 [package]
 name = "cpr-bps-managed-plugin"
-version = "0.10.0"
+version = "0.11.1"
 edition = "2024"
 
 [[bin]]
@@ -13,6 +13,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["arbitrary_precision"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "io-util", "io-std", "sync", "fs", "time"] }
 base64 = "0.22"
+chrono = { version = "=0.4.45", default-features = false, features = ["std"] }
 tempfile = "3"
 
 [profile.release]

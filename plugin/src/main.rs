@@ -1,6 +1,7 @@
 mod adapter;
 mod config;
 mod fallback;
+mod logs;
 mod management;
 mod middleware;
 mod route_log;
@@ -13,7 +14,7 @@ use gateway_plugin_sdk::call::upstream_adapter::{
     UpstreamPathPurpose, UpstreamTransport,
 };
 use gateway_plugin_sdk::client::{
-    PluginBuilder, PluginSession, RequestCall, SessionConfig, TypedReply, methods,
+    Empty, PluginBuilder, PluginSession, RequestCall, SessionConfig, TypedReply, methods,
 };
 use std::sync::Arc;
 
@@ -84,6 +85,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let config = schedule_config.clone();
             let registry = schedule_registry.clone();
             async move { scheduler::select(call, config, registry).await }
+        })?
+        .on(methods::RECONCILE, |call| async move {
+            route_log::reconcile(&call.host).await?;
+            Ok(TypedReply::new(Empty {}))
         })?
         .management(management::registration(), management::handle)?
         .middleware(move |call: RequestCall| {

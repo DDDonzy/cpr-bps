@@ -12,3 +12,6 @@ __pycache__/
 Thumbs.db
 
 frontend/node_modules/
+
+# Retained locally only for v0.10.x rollback; never distributed in the integrated plugin.
+Scripts/log-gateway/

@@ -46,19 +46,26 @@ impl Worker {
         let dir = tempfile::Builder::new()
             .prefix(".bps-converter-")
             .tempdir_in(std::env::current_dir()?)?;
-        let path = dir.path().join("bps-converter");
+        let path = dir.path().join(if cfg!(windows) {
+            "bps-converter.exe"
+        } else {
+            "bps-converter"
+        });
         tokio::fs::write(&path, include_bytes!(env!("BPS_ENGINE_BINARY"))).await?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).await?;
         }
-        let mut child = Command::new(path)
+        let mut command = Command::new(path);
+        command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
-            .kill_on_drop(true)
-            .spawn()?;
+            .kill_on_drop(true);
+        #[cfg(windows)]
+        command.creation_flags(0x08000000); // Windows 宿主不弹出转换器控制台。
+        let mut child = command.spawn()?;
         let mut stdin = child.stdin.take().ok_or("converter stdin missing")?;
         let stdout = child.stdout.take().ok_or("converter stdout missing")?;
         let mut reader = BufReader::new(stdout);

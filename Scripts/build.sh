@@ -2,16 +2,20 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ARCH="${1:-amd64}"
+GOOS=linux
 case "$ARCH" in
   amd64|x86_64) GOARCH=amd64; TARGET=x86_64-unknown-linux-musl; LABEL=x86_64-unknown-linux-gnu ;;
   arm64|aarch64) GOARCH=arm64; TARGET=aarch64-unknown-linux-musl; LABEL=aarch64-unknown-linux-gnu ;;
-  *) echo 'Usage: bash Scripts/build.sh amd64|arm64' >&2; exit 2 ;;
+  macos-arm64|darwin-arm64)
+    if [ "$(uname -s)" != Darwin ]; then echo 'Build the macOS package on macOS with its native SDK' >&2; exit 2; fi
+    GOOS=darwin; GOARCH=arm64; TARGET=aarch64-apple-darwin; LABEL=aarch64-apple-darwin ;;
+  *) echo 'Usage: bash Scripts/build.sh amd64|arm64|macos-arm64'  >&2; exit 2 ;;
 esac
 BUILD_DIR="${BUILD_DIR:-$ROOT/.build}"
 mkdir -p "$BUILD_DIR" "$ROOT/packages"
 BUILD_DIR="$(cd "$BUILD_DIR" && pwd)"
 export CARGO_TARGET_DIR="$BUILD_DIR/rust"
-( cd "$ROOT/converter"; CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" go build -trimpath -o "$BUILD_DIR/converter-$GOARCH" ./cmd/converter )
+( cd "$ROOT/converter"; CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build -trimpath -o "$BUILD_DIR/converter-$GOARCH" ./cmd/converter )
 export BPS_ENGINE_BINARY="$BUILD_DIR/converter-$GOARCH"
 rustup target add "$TARGET" --toolchain 1.97.0
 HOST="$(rustc +1.97.0 -vV | sed -n 's/^host: //p')"

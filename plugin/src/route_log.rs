@@ -6,6 +6,81 @@ use std::collections::HashMap;
 
 const NAMESPACE: &str = "bps.routes";
 const BUCKET_SIZE: usize = 64;
+pub const RETENTION_MS: u64 = 30 * 24 * 60 * 60 * 1000;
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+// 旧版未带时间字段；CPR 的 req_ 标识使用 UUIDv7，前 48 位是生成时间。
+fn created_ms(value: &Value) -> Option<u64> {
+    if let Some(ms) = value["recordedAtMs"].as_u64() {
+        return Some(ms);
+    }
+    let id = value["requestId"].as_str()?.strip_prefix("req_")?;
+    if id.len() != 32
+        || !id.bytes().all(|b| b.is_ascii_hexdigit())
+        || &id[12..13] != "7"
+        || !b"89abAB".contains(&id.as_bytes()[16])
+    {
+        return None;
+    }
+    u64::from_str_radix(&id[..12], 16).ok()
+}
+fn cleaned(value: &Value, now: u64) -> Vec<Value> {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let at = created_ms(entry)?;
+            if at == 0 || at.saturating_add(RETENTION_MS) <= now || at > now.saturating_add(300_000)
+            {
+                return None;
+            }
+            let mut entry = entry.clone();
+            entry["recordedAtMs"] = json!(at);
+            Some(entry)
+        })
+        .collect()
+}
+async fn clean_bucket(host: &HostClient, key: &str) -> Result<Value, PluginFault> {
+    for _ in 0..4 {
+        let mut current = read(host, key).await?;
+        if current.is_null() {
+            return Ok(current);
+        }
+        let entries = cleaned(&current["value"]["entries"], now_ms());
+        if current["value"]["entries"] == json!(entries) {
+            return Ok(current);
+        }
+        let result = if entries.is_empty() {
+            host.call(
+                "host.state.delete",
+                json!({"namespace":NAMESPACE,"key":key,"expected_version":current["version"]}),
+                vec![],
+            )
+            .await
+        } else {
+            host.call("host.state.put",json!({"namespace":NAMESPACE,"key":key,"value":{"entries":entries},"expected_version":current["version"]}),vec![]).await
+        };
+        if result.is_ok() {
+            current["value"]["entries"] = json!(entries);
+            return Ok(current);
+        }
+    }
+    Err(PluginFault::new(
+        ErrorCode::Conflict,
+        "日志清理遇到并发修改",
+    ))
+}
+pub async fn reconcile(host: &HostClient) -> Result<(), PluginFault> {
+    for bucket in 0..128 {
+        clean_bucket(host, &format!("{bucket:02x}")).await?;
+    }
+    Ok(())
+}
 fn bucket(id: &str) -> String {
     let hash = id.bytes().fold(2166136261u32, |hash, b| {
         (hash ^ u32::from(b)).wrapping_mul(16777619)
@@ -38,10 +113,13 @@ pub async fn record(
         let Ok(current) = read(host, &key).await else {
             break;
         };
-        let mut entries = current["value"]["entries"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
+        let now = now_ms();
+        let mut entries = cleaned(&current["value"]["entries"], now);
+        let created = entries
+            .iter()
+            .find(|r| r["requestId"] == id)
+            .and_then(created_ms)
+            .unwrap_or(now);
         // 回落后的旧 BPS 尝试可能较晚结束，不能覆盖已确定的原生子请求关联。
         if channel != "native_fallback"
             && entries
@@ -52,7 +130,7 @@ pub async fn record(
         }
         entries.retain(|r| r["requestId"] != id);
         entries.push(
-            json!({"requestId":id,"channel":channel,"reason":reason,"relatedRequestId":related}),
+            json!({"requestId":id,"channel":channel,"reason":reason,"relatedRequestId":related,"recordedAtMs":created}),
         );
         if entries.len() > BUCKET_SIZE {
             entries.drain(..entries.len() - BUCKET_SIZE);
@@ -117,7 +195,7 @@ pub async fn decorate(host: &HostClient, mut value: Value) -> Result<Value, Plug
         }
         let key = bucket(&id);
         if !cache.contains_key(&key) {
-            cache.insert(key.clone(), read(host, &key).await?);
+            cache.insert(key.clone(), clean_bucket(host, &key).await?);
         }
         if let Some(fact) = cache[&key]["value"]["entries"]
             .as_array()
@@ -131,6 +209,18 @@ pub async fn decorate(host: &HostClient, mut value: Value) -> Result<Value, Plug
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn expires_old_entries_and_migrates_uuid7_timestamps() {
+        let now = 1_800_000_000_000u64;
+        let v = json!([{"requestId":"new","recordedAtMs":now-1},{"requestId":"old","recordedAtMs":now-RETENTION_MS},{"requestId":"unknown"}]);
+        let rows = cleaned(&v, now);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["requestId"], "new");
+        let legacy = json!({"requestId":"req_01a0f3065a6974d6b49ae7bd192b7401"});
+        let ts = created_ms(&legacy).unwrap();
+        assert_eq!(cleaned(&json!([legacy]), ts + 1).len(), 1);
+        assert!(cleaned(&json!([legacy]), ts + RETENTION_MS).is_empty());
+    }
     #[test]
     fn only_decorates_authorized_log_shapes_and_preserves_facts() {
         let mut row =

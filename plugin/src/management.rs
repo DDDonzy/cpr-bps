@@ -25,7 +25,8 @@ pub fn registration() -> ManagementRegistration {
             ("GET", "settings"),
             ("POST", "settings"),
             ("GET", "catalog"),
-            ("POST", "decorate-logs"),
+            ("POST", "logs.query"),
+            ("POST", "logs.detail"),
         ]
         .into_iter()
         .map(|(method, path)| ManagementRoute {
@@ -39,20 +40,34 @@ pub fn registration() -> ManagementRegistration {
             response_content_types: vec!["application/json".into()],
         })
         .collect(),
-        resources: ["web/index.html", "web/app.js", "web/style.css"]
-            .into_iter()
-            .map(|path| ManagementResource {
-                path: path.into(),
-                public: false,
-            })
-            .collect(),
-        pages: vec![ManagementPage {
-            id: "settings".into(),
-            title: "BPS 设置".into(),
-            description: Some("管理账号、模型与失败处理".into()),
-            entry: "web/index.html".into(),
-            icon: None,
-        }],
+        resources: [
+            "web/index.html",
+            "web/logs.html",
+            "web/app.js",
+            "web/style.css",
+        ]
+        .into_iter()
+        .map(|path| ManagementResource {
+            path: path.into(),
+            public: false,
+        })
+        .collect(),
+        pages: vec![
+            ManagementPage {
+                id: "settings".into(),
+                title: "BPS 设置".into(),
+                description: Some("管理账号、模型与失败处理".into()),
+                entry: "web/index.html".into(),
+                icon: None,
+            },
+            ManagementPage {
+                id: "logs".into(),
+                title: "BPS 日志".into(),
+                description: Some("请求记录、实际通道与回落原因".into()),
+                entry: "web/logs.html".into(),
+                icon: None,
+            },
+        ],
         callbacks: vec![],
     }
 }
@@ -188,13 +203,12 @@ struct Save {
 }
 
 async fn handle_inner(call: &TypedCall<ManagementRequest>) -> Result<Value, PluginFault> {
-    if call.request.method == "POST" && call.request.path == "decorate-logs" {
-        if call.payload.len() > 4 * 1024 * 1024 {
-            return Err(PluginFault::new(ErrorCode::InvalidInput, "日志响应过大"));
+    if call.request.method == "POST" {
+        match call.request.path.as_str() {
+            "logs.query" => return crate::logs::query(&call.host, &call.payload).await,
+            "logs.detail" => return crate::logs::detail(&call.host, &call.payload).await,
+            _ => {}
         }
-        let value = serde_json::from_slice(&call.payload)
-            .map_err(|_| PluginFault::new(ErrorCode::InvalidInput, "日志格式无效"))?;
-        return crate::route_log::decorate(&call.host, value).await;
     }
     let current = instance(&call.host, &call.context.instance_id).await?;
     let config = Config::parse(current["configuration"].clone())?;
